@@ -5,7 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    workflow_dispatch:
+  workflow_dispatch:
 
 permissions:
   id-token: write      # needed for Azure OIDC login
@@ -26,7 +26,7 @@ jobs:
 
   package:
     needs: test
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
