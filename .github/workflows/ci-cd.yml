@@ -22,7 +22,7 @@ jobs:
           cache: pip
       - run: pip install -r requirements-dev.txt
       - run: flake8 app tests --max-line-length=120
-      - run: pytest --cov=app --cov-report=xml
+      - run: python -m pytest --cov=app --cov-report=xml
 
   package:
     needs: test
