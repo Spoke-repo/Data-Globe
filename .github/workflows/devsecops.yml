@@ -1,0 +1,160 @@
+name: DevSecOps Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  id-token: write          # Azure OIDC + Cosign keyless signing
+  contents: read
+  security-events: write   # upload scan results to GitHub Security tab
+
+env:
+  IMAGE_NAME: company-data-api
+  ACR_NAME: ${{ vars.ACR_NAME }}
+
+jobs:
+  # 1. Quality gate + unit tests
+  test-and-sonar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }          # SonarQube needs full history
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install -r requirements-dev.txt
+      - run: flake8 app tests --max-line-length=120
+      - run: pytest --cov=app --cov-report=xml
+      - name: SonarQube scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      - name: SonarQube quality gate
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # 2. Secrets detection
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 3. SCA (open-source dependencies) + SAST
+  blackduck-sca:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Black Duck SCA
+        uses: blackduck-inc/black-duck-security-scan@v2
+        with:
+          blackducksca_url: ${{ secrets.BLACKDUCK_URL }}
+          blackducksca_token: ${{ secrets.BLACKDUCK_TOKEN }}
+          blackducksca_scan_failure_severities: "BLOCKER,CRITICAL"
+
+  polaris-sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Polaris SAST
+        uses: blackduck-inc/black-duck-security-scan@v2
+        with:
+          polaris_server_url: ${{ secrets.POLARIS_URL }}
+          polaris_access_token: ${{ secrets.POLARIS_TOKEN }}
+          polaris_assessment_types: "SAST"
+
+  # 4. Build, scan image, push, sign
+  build-scan-sign:
+    needs: [test-and-sonar, secret-scan, blackduck-sca, polaris-sast]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - run: az acr login --name $ACR_NAME
+
+      - name: Build image
+        run: docker build -t $ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }} .
+
+      - name: Trivy image scan (fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Push image
+        id: push
+        run: |
+          IMAGE=$ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}
+          docker push $IMAGE
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $IMAGE)
+          echo "image=$DIGEST" >> $GITHUB_OUTPUT
+
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign image with Cosign (keyless)
+        run: cosign sign --yes ${{ steps.push.outputs.image }}
+
+  # 5. Deploy dev -> prod (prod needs manual approval via environment rules)
+  deploy-dev:
+    needs: build-scan-sign
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ vars.AKS_RESOURCE_GROUP }}
+          cluster-name: ${{ vars.AKS_CLUSTER }}
+      - uses: sigstore/cosign-installer@v3
+      - name: Verify signature before deploying
+        run: |
+          cosign verify ${{ needs.build-scan-sign.outputs.image }} \
+            --certificate-identity-regexp "https://github.com/${{ github.repository }}/.*" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      - uses: azure/k8s-deploy@v5
+        with:
+          namespace: dev
+          manifests: k8s/deployment.yaml
+          images: ${{ needs.build-scan-sign.outputs.image }}
+
+  deploy-prod:
+    needs: [build-scan-sign, deploy-dev]
+    runs-on: ubuntu-latest
+    environment: production      # configure required reviewers on this environment
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ vars.AKS_RESOURCE_GROUP }}
+          cluster-name: ${{ vars.AKS_CLUSTER }}
+      - uses: azure/k8s-deploy@v5
+        with:
+          namespace: prod
+          manifests: k8s/deployment.yaml
+          images: ${{ needs.build-scan-sign.outputs.image }}
