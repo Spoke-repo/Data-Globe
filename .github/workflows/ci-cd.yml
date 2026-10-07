@@ -10,10 +10,6 @@ permissions:
   id-token: write      # needed for Azure OIDC login
   contents: read
 
-env:
-  IMAGE_NAME: company-data-api
-  ACR_NAME: ${{ vars.ACR_NAME }}
-
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -27,46 +23,43 @@ jobs:
       - run: flake8 app tests --max-line-length=120
       - run: pytest --cov=app --cov-report=xml
 
-  build-push:
+  package:
     needs: test
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.meta.outputs.image }}
     steps:
       - uses: actions/checkout@v4
-      - uses: azure/login@v2
+      - name: Create deployment zip
+        run: zip -r app.zip app requirements.txt
+      - uses: actions/upload-artifact@v4
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Login to ACR
-        run: az acr login --name $ACR_NAME
-      - name: Build and push image
-        id: meta
-        run: |
-          IMAGE=$ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}
-          docker build -t $IMAGE .
-          docker push $IMAGE
-          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          name: app-package
+          path: app.zip
+          retention-days: 1
 
   deploy-dev:
-    needs: build-push
+    needs: package
     runs-on: ubuntu-latest
     environment: dev
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/login@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-package
+      - name: Login to Azure
+        uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - uses: azure/aks-set-context@v4
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
         with:
-          resource-group: ${{ vars.AKS_RESOURCE_GROUP }}
-          cluster-name: ${{ vars.AKS_CLUSTER }}
-      - uses: azure/k8s-deploy@v5
-        with:
-          namespace: dev
-          manifests: k8s/deployment.yaml
-          images: ${{ needs.build-push.outputs.image }}
+          app-name: ${{ vars.WEBAPP_DEV }}
+          package: app.zip
+      - name: Health check
+        run: |
+          for i in $(seq 1 20); do
+            curl -fs https://${{ vars.WEBAPP_DEV }}.azurewebsites.net/health && exit 0
+            sleep 10
+          done
+          exit 1
