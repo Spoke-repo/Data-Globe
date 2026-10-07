@@ -12,50 +12,108 @@ permissions:
   contents: read
 
 jobs:
+
+  # ============================================================
+  # TEST
+  # ============================================================
   test:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
 
+      - name: Check dependency files
+        run: |
+          echo "=============================="
+          echo "requirements.txt"
+          echo "=============================="
+          cat requirements.txt
+
+          echo ""
+          echo "=============================="
+          echo "requirements-dev.txt"
+          echo "=============================="
+          cat requirements-dev.txt
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
+
+          echo "Installing application dependencies..."
+          python -m pip install -r requirements.txt
+
+          echo "Installing development/test dependencies..."
+          python -m pip install -r requirements-dev.txt
+
+      - name: Verify installed dependencies
+        run: |
+          echo "=============================="
+          echo "Installed packages"
+          echo "=============================="
+          python -m pip list
+
+          echo ""
+          echo "=============================="
+          echo "Checking SQLAlchemy"
+          echo "=============================="
+          python -c "import sqlalchemy; print('SQLAlchemy version:', sqlalchemy.__version__)"
 
       - name: Lint
-        run: flake8 app tests --max-line-length=120
+        run: |
+          flake8 app tests --max-line-length=120
 
       - name: Run tests
-        run: python -m pytest --cov=app --cov-report=xml
+        run: |
+          python -m pytest --cov=app --cov-report=xml
 
+
+  # ============================================================
+  # PACKAGE
+  # ============================================================
   package:
     needs: test
+
+    # Do not package/deploy for pull requests
     if: github.event_name != 'pull_request'
+
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source code
+        uses: actions/checkout@v4
 
       - name: Create deployment zip
-        run: zip -r app.zip app requirements.txt
+        run: |
+          zip -r app.zip app requirements.txt
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload application artifact
+        uses: actions/upload-artifact@v4
         with:
           name: app-package
           path: app.zip
           retention-days: 1
 
+
+  # ============================================================
+  # DEPLOY DEV
+  # ============================================================
   deploy-dev:
     needs: package
+
     runs-on: ubuntu-latest
+
     environment: dev
+
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download application artifact
+        uses: actions/download-artifact@v4
         with:
           name: app-package
 
@@ -75,7 +133,15 @@ jobs:
       - name: Health check
         run: |
           for i in $(seq 1 20); do
-            curl -fs https://${{ vars.WEBAPP_DEV }}.azurewebsites.net/health && exit 0
+            echo "Health check attempt $i/20..."
+
+            if curl -fs https://${{ vars.WEBAPP_DEV }}.azurewebsites.net/health; then
+              echo "Application is healthy."
+              exit 0
+            fi
+
             sleep 10
           done
+
+          echo "Application health check failed."
           exit 1
