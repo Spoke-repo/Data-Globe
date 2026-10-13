@@ -155,13 +155,13 @@ jobs:
 
       - name: Validate deployment configuration
         env:
-          VM_HOST: ${{ vars.VM_HOST }}
+          VM_HOST: ${{ vars.VM_NAME }}
           VM_USER: ${{ vars.VM_USER }}
           VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
           VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
         run: |
           test -f app.zip
-          test -n "$VM_HOST" || { echo "Missing VM_HOST variable"; exit 1; }
+          test -n "$VM_HOST" || { echo "Missing VM_NAME variable"; exit 1; }
           test -n "$VM_USER" || { echo "Missing VM_USER variable"; exit 1; }
           test -n "$VM_SSH_PRIVATE_KEY" || { echo "Missing SSH private key secret"; exit 1; }
           test -n "$VM_SSH_KNOWN_HOSTS" || { echo "Missing SSH known-hosts secret"; exit 1; }
@@ -179,7 +179,7 @@ jobs:
 
       - name: Verify SSH connectivity
         env:
-          VM_HOST: ${{ vars.VM_HOST }}
+          VM_HOST: ${{ vars.VM_NAME }}
           VM_USER: ${{ vars.VM_USER }}
         run: |
           ssh -i ~/.ssh/deploy_key \
@@ -189,27 +189,27 @@ jobs:
 
       - name: Transfer application package
         env:
-          VM_HOST: ${{ vars.VM_HOST }}
+          VM_HOST: ${{ vars.VM_NAME }}
           VM_USER: ${{ vars.VM_USER }}
         run: |
           scp -i ~/.ssh/deploy_key \
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
-            app.zip "${VM_USER}@${VM_HOST}:/tmp/app-${GITHUB_SHA}.zip"
+            app.zip "${VM_USER}@${VM_NAME}:/tmp/app-${GITHUB_SHA}.zip"
 
       - name: Deploy and verify application
         env:
-          VM_HOST: ${{ vars.VM_HOST }}
+          VM_HOST: ${{ vars.VM_NAME }}
           VM_USER: ${{ vars.VM_USER }}
         run: |
           ssh -i ~/.ssh/deploy_key \
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
-            "${VM_USER}@${VM_HOST}" \
+            "${VM_USER}@${VM_NAME}" \
             "sudo /usr/local/sbin/deploy-myflaskapp '${GITHUB_SHA}'"
 
           ssh -i ~/.ssh/deploy_key \
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
-            "${VM_USER}@${VM_HOST}" \
+            "${VM_USER}@${VM_NAME}" \
             "curl -fsS --max-time 10 http://127.0.0.1:8080/health"
