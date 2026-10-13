@@ -1,3 +1,4 @@
+
 name: Flask CI Pipeline
 
 on:
@@ -45,6 +46,13 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: app/requirements.txt
+
+      - name: Show requirements
+        run: |
+          echo "=============================="
+          echo "app/requirements.txt"
+          echo "=============================="
+          cat app/requirements.txt
 
       - name: Install dependencies
         run: |
@@ -122,10 +130,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Create deployment package
+      - name: Verify requirements path
         run: |
           test -f app/requirements.txt
+          cat app/requirements.txt
 
+      - name: Create deployment package
+        run: |
           zip -r app.zip app \
             -x "app/**/__pycache__/*" \
                "app/**/*.pyc" \
@@ -175,7 +186,6 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$VM_SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-
           printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
